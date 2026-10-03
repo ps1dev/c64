@@ -6,7 +6,7 @@ c64.cpp \
 c64jit.cpp \
 c64main.cpp \
 
-CPPFLAGS += -I../../..
+CPPFLAGS += -I../nugget
 CXXFLAGS = -std=c++20
 CPPFLAGS += -O3 $(EXTRA)
 
@@ -14,7 +14,7 @@ CPPFLAGS += -O3 $(EXTRA)
 # kept in this tree. Pinned to a commit so the build is reproducible.
 OPENROMS_URL = https://raw.githubusercontent.com/MEGA65/open-roms/f9a1bab1fddc99aeb872ca7c15dac71197c86ac7/bin
 
-include ../../psyqo.mk
+include ../nugget/psyqo/psyqo.mk
 
 basic_generic.rom kernal_generic.rom chargen_openroms.rom:
 	curl -sSLf -o $@ $(OPENROMS_URL)/$@

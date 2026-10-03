@@ -5,7 +5,7 @@ SRCS = \
 m6502bench.cpp \
 m6502jit.cpp \
 
-CPPFLAGS += -I../../..
+CPPFLAGS += -I../nugget
 CXXFLAGS = -std=c++20
 CPPFLAGS += -O3 $(EXTRA)
 
@@ -13,7 +13,7 @@ CPPFLAGS += -O3 $(EXTRA)
 # is fetched at build time rather than kept in this tree.
 FUNCTEST_URL = https://raw.githubusercontent.com/Klaus2m5/6502_65C02_functional_tests/master/bin_files/6502_functional_test.bin
 
-include ../../psyqo.mk
+include ../nugget/psyqo/psyqo.mk
 
 6502_functional_test.bin:
 	curl -sSLf -o $@ $(FUNCTEST_URL)
