@@ -26,6 +26,8 @@ SOFTWARE.
 
 #include "m6502jit.hh"
 
+#include "common/util/encoder.hh"
+
 #include <stddef.h>
 #include <stdint.h>
 
@@ -371,9 +373,12 @@ bool mayExitBefore(uint8_t op) {
 }
 
 // --------------------------------------------------------------------------
-// Emitter. Inserts a nop after a load only when the next instruction reads the
-// loaded register (R3000 has no load interlock). Every branch and jump gets a
-// nop delay slot unless a caller supplies one explicitly.
+// Emitter. Instruction words come from nugget's Mips::Encoder; this layer only
+// tracks load delays. It inserts a nop after a load only when the next
+// instruction reads the loaded register (R3000 has no load interlock). Every
+// branch and jump gets a nop delay slot.
+
+namespace Enc = Mips::Encoder;
 
 struct Emitter {
     uint32_t* code;
@@ -381,48 +386,43 @@ struct Emitter {
     int lastLoad = -1;
 
     static uint32_t m(int r) { return r ? (1u << r) : 0; }
+    static Mips::Reg g(int r) { return Mips::Reg(r); }
     void raw(uint32_t w) {
         code[pos++] = w;
         lastLoad = -1;
     }
     void emit(uint32_t w, uint32_t reads, int loadDst = -1) {
-        if (lastLoad > 0 && (reads & (1u << lastLoad))) code[pos++] = 0;
+        if (lastLoad > 0 && (reads & (1u << lastLoad))) code[pos++] = Enc::nop();
         code[pos++] = w;
         lastLoad = loadDst;
     }
-    void nop() { raw(0); }
+    void nop() { raw(Enc::nop()); }
     void settle() {
-        if (lastLoad > 0) raw(0);
+        if (lastLoad > 0) nop();
     }
     uint32_t here() {
         settle();
         return pos;
     }
 
-    void R(uint32_t fn, int rs, int rt, int rd, int sh = 0) {
-        emit((rs << 21) | (rt << 16) | (rd << 11) | (sh << 6) | fn, m(rs) | m(rt));
-    }
-    void addu(int d, int s, int t) { R(0x21, s, t, d); }
-    void subu(int d, int s, int t) { R(0x23, s, t, d); }
-    void and_(int d, int s, int t) { R(0x24, s, t, d); }
-    void or_(int d, int s, int t) { R(0x25, s, t, d); }
-    void xor_(int d, int s, int t) { R(0x26, s, t, d); }
-    void nor(int d, int s, int t) { R(0x27, s, t, d); }
-    void sltu(int d, int s, int t) { R(0x2b, s, t, d); }
-    void sll(int d, int t, int sa) { R(0x00, 0, t, d, sa); }
-    void srl(int d, int t, int sa) { R(0x02, 0, t, d, sa); }
-    void srlv(int d, int t, int s) { R(0x06, s, t, d); }
+    void addu(int d, int s, int t) { emit(Enc::addu(g(d), g(s), g(t)), m(s) | m(t)); }
+    void subu(int d, int s, int t) { emit(Enc::subu(g(d), g(s), g(t)), m(s) | m(t)); }
+    void and_(int d, int s, int t) { emit(Enc::andd(g(d), g(s), g(t)), m(s) | m(t)); }
+    void or_(int d, int s, int t) { emit(Enc::orr(g(d), g(s), g(t)), m(s) | m(t)); }
+    void xor_(int d, int s, int t) { emit(Enc::xorr(g(d), g(s), g(t)), m(s) | m(t)); }
+    void nor(int d, int s, int t) { emit(Enc::nor(g(d), g(s), g(t)), m(s) | m(t)); }
+    void sltu(int d, int s, int t) { emit(Enc::sltu(g(d), g(s), g(t)), m(s) | m(t)); }
+    void sll(int d, int t, int sa) { emit(Enc::sll(g(d), g(t), sa), m(t)); }
+    void srl(int d, int t, int sa) { emit(Enc::srl(g(d), g(t), sa), m(t)); }
+    void srlv(int d, int t, int s) { emit(Enc::srlv(g(d), g(t), g(s)), m(s) | m(t)); }
     void move(int d, int s) { addu(d, s, ZERO); }
 
-    void I(uint32_t op, int rs, int rt, int32_t imm) {
-        emit((op << 26) | (rs << 21) | (rt << 16) | (imm & 0xffff), m(rs));
-    }
-    void addiu(int t, int s, int32_t imm) { I(0x09, s, t, imm); }
-    void sltiu(int t, int s, int32_t imm) { I(0x0b, s, t, imm); }
-    void andi(int t, int s, uint32_t imm) { I(0x0c, s, t, imm); }
-    void ori(int t, int s, uint32_t imm) { I(0x0d, s, t, imm); }
-    void xori(int t, int s, uint32_t imm) { I(0x0e, s, t, imm); }
-    void lui(int t, uint32_t imm) { I(0x0f, 0, t, imm); }
+    void addiu(int t, int s, int32_t imm) { emit(Enc::addiu(g(t), g(s), imm), m(s)); }
+    void sltiu(int t, int s, int32_t imm) { emit(Enc::sltiu(g(t), g(s), imm), m(s)); }
+    void andi(int t, int s, uint32_t imm) { emit(Enc::andi(g(t), g(s), imm), m(s)); }
+    void ori(int t, int s, uint32_t imm) { emit(Enc::ori(g(t), g(s), imm), m(s)); }
+    void xori(int t, int s, uint32_t imm) { emit(Enc::xori(g(t), g(s), imm), m(s)); }
+    void lui(int t, uint32_t imm) { emit(Enc::lui(g(t), imm), 0); }
     void li(int t, uint32_t v) {
         if (v <= 0xffff) {
             ori(t, ZERO, v);
@@ -431,40 +431,36 @@ struct Emitter {
             if (v & 0xffff) ori(t, t, v & 0xffff);
         }
     }
-    void load(uint32_t op, int t, int32_t off, int base) {
-        emit((op << 26) | (base << 21) | (t << 16) | (off & 0xffff), m(base), t);
-    }
-    void lbu(int t, int32_t off, int base) { load(0x24, t, off, base); }
-    void lhu(int t, int32_t off, int base) { load(0x25, t, off, base); }
-    void lw(int t, int32_t off, int base) { load(0x23, t, off, base); }
-    void store(uint32_t op, int t, int32_t off, int base) {
-        emit((op << 26) | (base << 21) | (t << 16) | (off & 0xffff), m(base) | m(t));
-    }
-    void sb(int t, int32_t off, int base) { store(0x28, t, off, base); }
-    void sh(int t, int32_t off, int base) { store(0x29, t, off, base); }
-    void sw(int t, int32_t off, int base) { store(0x2b, t, off, base); }
+    void lbu(int t, int32_t off, int base) { emit(Enc::lbu(g(t), off, g(base)), m(base), t); }
+    void lhu(int t, int32_t off, int base) { emit(Enc::lhu(g(t), off, g(base)), m(base), t); }
+    void lw(int t, int32_t off, int base) { emit(Enc::lw(g(t), off, g(base)), m(base), t); }
+    void sb(int t, int32_t off, int base) { emit(Enc::sb(g(t), off, g(base)), m(base) | m(t)); }
+    void sh(int t, int32_t off, int base) { emit(Enc::sh(g(t), off, g(base)), m(base) | m(t)); }
+    void sw(int t, int32_t off, int base) { emit(Enc::sw(g(t), off, g(base)), m(base) | m(t)); }
 
-    // Branches return the index of the branch word, for patch(). The delay slot
-    // is a nop.
-    uint32_t brI(uint32_t op, int rs, int rt, uint32_t reads) {
-        emit((op << 26) | (rs << 21) | (rt << 16), reads);
+    // Branches are emitted with a zero offset and return the index of the branch
+    // word for patch(). The delay slot is a nop.
+    uint32_t branch(uint32_t w, uint32_t reads) {
+        emit(w, reads);
         uint32_t at = pos - 1;
         nop();
         return at;
     }
-    uint32_t beq(int s, int t) { return brI(0x04, s, t, m(s) | m(t)); }
-    uint32_t bne(int s, int t) { return brI(0x05, s, t, m(s) | m(t)); }
-    uint32_t bltz(int s) { return brI(0x01, s, 0, m(s)); }
+    uint32_t beq(int s, int t) { return branch(Enc::beq(g(s), g(t), 0), m(s) | m(t)); }
+    uint32_t bne(int s, int t) { return branch(Enc::bne(g(s), g(t), 0), m(s) | m(t)); }
+    uint32_t bltz(int s) { return branch(Enc::bltz(g(s), 0), m(s)); }
+    uint32_t bgez(int s) { return branch(Enc::bgez(g(s), 0), m(s)); }
+    // Fills in the 16-bit offset field of a branch emitted above.
     void patch(uint32_t at, uint32_t target) {
         int32_t off = (int32_t)target - (int32_t)(at + 1);
         code[at] = (code[at] & 0xffff0000) | (off & 0xffff);
     }
     void j(const void* addr) {
-        emit((0x02u << 26) | ((((uint32_t)addr) >> 2) & 0x3ffffff), 0);
+        emit(Enc::j((uint32_t)addr), 0);
         nop();
     }
     void jr(int s) {
-        emit((s << 21) | 0x08, m(s));
+        emit(Enc::jr(g(s)), m(s));
         nop();
     }
 };
@@ -709,11 +705,11 @@ struct Translator {
         e.andi(T5, rA, 0xf0);
         e.andi(AT, m, 0xf0);
         e.subu(T5, T5, AT);  // hi, signed
-        uint32_t b1 = e.brI(0x01, T4, 1, Emitter::m(T4));  // bgez
+        uint32_t b1 = e.bgez(T4);
         e.addiu(T4, T4, -6);
         e.addiu(T5, T5, -0x10);
         e.patch(b1, e.here());
-        uint32_t b2 = e.brI(0x01, T5, 1, Emitter::m(T5));  // bgez
+        uint32_t b2 = e.bgez(T5);
         e.addiu(T5, T5, -0x60);
         e.patch(b2, e.here());
         e.srl(T6, T7, 8);
@@ -1691,6 +1687,13 @@ void* compile(State& st, uint32_t start, bool dec) {
     if (start == JIT_DUMP) {
         ramsyscall_printf("DUMP %04x dec=%d n=%d words=%u\n", start, dec ? 1 : 0, n, e.pos);
         for (uint32_t i = 0; i < e.pos; i++) ramsyscall_printf("W %08x\n", ((uint32_t*)code)[i]);
+    }
+#endif
+#ifdef JIT_HASH
+    {
+        uint32_t h = 2166136261u;
+        for (uint32_t i = 0; i < e.pos; i++) h = (h ^ ((uint32_t*)code)[i]) * 16777619u;
+        ramsyscall_printf("H %04x %d %u %08x\n", start, dec ? 1 : 0, e.pos, h);
     }
 #endif
 
