@@ -44,6 +44,10 @@ typedef m6502::FlatBus JBus;
 #define M6502JIT_ARENA_WORDS (256 * 1024)
 #endif
 
+// The nugget i-cache flush (common/hardware/flushcache.s). It masks interrupts
+// around the cache isolation; the BIOS FlushCache is called with them live.
+extern "C" void flushCache();
+
 using namespace m6502;
 
 namespace {
@@ -1690,7 +1694,7 @@ void* compile(State& st, uint32_t start, bool dec) {
     }
 #endif
 
-    syscall_flushCache();
+    flushCache();
     return code;
 }
 
@@ -1714,7 +1718,7 @@ void m6502jit::init(State& st) {
     for (uint32_t i = 0; i < 8192; i++) s_smcHist[i] = 0;
     st.codeBits = s_codeBits;
     st.table = s_table;
-    syscall_flushCache();
+    flushCache();
 }
 
 const m6502jit::Stats& m6502jit::stats() { return s_stats; }
