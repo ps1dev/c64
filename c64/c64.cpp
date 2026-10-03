@@ -636,6 +636,35 @@ void runFrame() {
     g_frame++;
 }
 
+void loadPrg(const uint8_t* prg, uint32_t len) {
+    const uint32_t at = prg[0] | (prg[1] << 8);
+    for (uint32_t i = 2; i < len; i++) {
+        const uint32_t a = (at + i - 2) & 0xffff;
+        if (Bus::direct(a)) {
+            g_view[a] = prg[i];
+        } else {
+            g_ram[a] = prg[i];
+        }
+    }
+    if (at == 0x0801) {
+        const uint32_t end = (at + len - 2) & 0xffff;
+        // VARTAB, ARYTAB, STREND
+        for (uint32_t z = 0x2d; z <= 0x31; z += 2) {
+            g_view[z] = end & 0xff;
+            g_view[z + 1] = end >> 8;
+        }
+    }
+}
+
+void typeKeys(const char* s) {
+    uint32_t n = 0;
+    while (s[n] && n < 10) {
+        g_view[0x277 + n] = s[n];
+        n++;
+    }
+    g_view[0xc6] = n;
+}
+
 const Stats& stats() { return s_stats; }
 
 }  // namespace c64

@@ -42,6 +42,9 @@ SOFTWARE.
 #include "psyqo/gpu.hh"
 #include "psyqo/scene.hh"
 #include "roms.h"
+#ifdef C64_PRG
+#include "prg.h"
+#endif
 
 namespace {
 
@@ -466,7 +469,20 @@ void C64Scene::frame() {
         s_reportedReady = true;
         ramsyscall_printf("C64: READY. on screen at guest frame %u\n", c64::g_frame);
         dumpScreen();
+#ifdef C64_PRG
+        c64::loadPrg(c_prg, c_prg_len);
+        c64::g_cpu.pc = C64_PRG;
+        ramsyscall_printf("C64: started prg (%u bytes) at %04x, guest frame %u\n", c_prg_len, C64_PRG, c64::g_frame);
+#endif
     }
+#ifdef C64_PRG
+    static bool s_reportedDone;
+    if (s_reportedReady && !s_reportedDone && screenHas("DONE")) {
+        s_reportedDone = true;
+        ramsyscall_printf("C64: prg DONE at guest frame %u\n", c64::g_frame);
+        dumpScreen();
+    }
+#endif
     if (s_frames == 300) {
         // 15734 hblanks per second. Frame budget at 59.94 Hz is 262.5 hblanks.
         const uint32_t avgEmuUs = s_sumEmu * 6356 / 100 / s_frames;

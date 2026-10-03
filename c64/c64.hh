@@ -88,6 +88,12 @@ extern uint32_t g_rowCount;
 
 void runFrame();
 
+// Puts a .prg (two-byte load address first) in RAM and, for a BASIC program at
+// $0801, points the BASIC end-of-program pointers past it.
+void loadPrg(const uint8_t* prg, uint32_t len);
+// Queues up to 10 PETSCII characters in the KERNAL keyboard buffer.
+void typeKeys(const char* s);
+
 #ifdef C64_PROF
 // Sum of sysclk ticks spent inside the CPU core, and the number of core calls.
 uint16_t profTick();
