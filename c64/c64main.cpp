@@ -479,7 +479,9 @@ void C64Scene::frame() {
     static bool s_reportedDone;
     if (s_reportedReady && !s_reportedDone && screenHas("DONE")) {
         s_reportedDone = true;
-        ramsyscall_printf("C64: prg DONE at guest frame %u\n", c64::g_frame);
+        uint32_t colorHash = 2166136261u;
+        for (unsigned i = 0; i < 1000; i++) colorHash = (colorHash ^ c64::g_color[i]) * 16777619u;
+        ramsyscall_printf("C64: prg DONE at guest frame %u, colour RAM hash %08x\n", c64::g_frame, colorHash);
         dumpScreen();
     }
 #endif

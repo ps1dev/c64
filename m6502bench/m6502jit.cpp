@@ -77,6 +77,7 @@ struct SBus {
     static inline bool smcVisible(uint32_t a) { return JBus::smcVisible(a); }
 };
 constexpr bool c_hasIo = JBus::hasIo;
+constexpr bool c_hasColor = JBus::hasColor;
 
 // Pinned guest state while translated code runs. Everything in caller-saved
 // registers is safe because translated code never calls out.
@@ -611,7 +612,7 @@ struct Insn {
     uint8_t op, len;
 };
 
-enum StubKind : uint8_t { ST_SIDE, ST_SMC_CONST, ST_SMC_DYN, ST_SMC_STACK, ST_SLOW, ST_IRQ };
+enum StubKind : uint8_t { ST_SIDE, ST_SMC_CONST, ST_SMC_DYN, ST_SMC_STACK, ST_SLOW, ST_IRQ, ST_COLOR_R, ST_COLOR_W };
 
 struct Stub {
     uint32_t branchAt;
@@ -621,6 +622,11 @@ struct Stub {
     uint8_t kind;
     bool trap;
     uint32_t ea;
+    // ST_COLOR_R/W: the register loaded or stored, whether the read is (zp),Y
+    // and owes the page-cross penalty, and where the block continues.
+    int8_t reg;
+    bool indy;
+    uint32_t resume;
 };
 
 struct Translator {
@@ -731,6 +737,9 @@ struct Translator {
         s.nz = nz;
         s.trap = false;
         s.ea = 0;
+        s.reg = -1;
+        s.indy = false;
+        s.resume = 0;
         return s;
     }
 
@@ -743,24 +752,35 @@ struct Translator {
         addStub(b, ST_SLOW, ins[cur].pc, suffix[cur] + c_cycles[ins[cur].op]);
     }
 
-    // The effective address in T2 may be I/O: leave before reading it.
-    void ioCheck() {
+    // The effective address in T2 may be I/O: leave before reading it. With
+    // dst given, a colour RAM read is done out of line instead; the caller sets
+    // the returned stub's resume once the load is emitted.
+    Stub* ioCheck(int dst = -1) {
         e.srl(T0, T2, 12);
         e.xori(T0, T0, 0xd);
-        slowStub(e.beq(T0, ZERO));
+        uint32_t b = e.beq(T0, ZERO);
+        if (c_hasColor && dst >= 0) {
+            Stub& s = addStub(b, ST_COLOR_R, ins[cur].pc, suffix[cur] + c_cycles[ins[cur].op]);
+            s.reg = dst;
+            return &s;
+        }
+        slowStub(b);
+        return nullptr;
     }
 
     // The effective address in T2 may not be plain RAM: leave before writing.
-    void writeCheck() {
+    // With val given, a colour RAM store is done out of line instead, as for
+    // ioCheck.
+    Stub* writeCheck(int val = -1) {
         const Insn& in = ins[cur];
         const uint8_t mode = s_mode[in.op];
         if (mode == M_ZPX || mode == M_ZPY) {
             e.sltiu(T0, T2, 2);
             slowStub(e.bne(T0, ZERO));
-            return;
+            return nullptr;
         }
         if ((mode == M_ABSX || mode == M_ABSY) && !anyInRange(in.operand, [](uint32_t a) { return !JBus::direct(a); })) {
-            return;
+            return nullptr;
         }
         // Slow regions $A000-$BFFF and $D000-$FFFF as a 16-bit mask over the
         // top nibble, plus $00/$01.
@@ -770,7 +790,14 @@ struct Translator {
         e.sltiu(T0, T2, 2);
         e.or_(T1, T1, T0);
         e.andi(T1, T1, 1);
-        slowStub(e.bne(T1, ZERO));
+        uint32_t b = e.bne(T1, ZERO);
+        if (c_hasColor && val >= 0) {
+            Stub& s = addStub(b, ST_COLOR_W, ins[cur].pc, suffix[cur] + c_cycles[ins[cur].op]);
+            s.reg = val;
+            return &s;
+        }
+        slowStub(b);
+        return nullptr;
     }
 
     void indyPenalty() {
@@ -808,9 +835,10 @@ struct Translator {
                     e.ori(T2, ZERO, v);
                     e.addu(T2, T2, r);
                     if (v > 0xff00) e.andi(T2, T2, 0xffff);
-                    ioCheck();
+                    Stub* c = ioCheck(dst);
                     e.addu(T1, T2, rMEM);
                     e.lbu(dst, memOff(0), T1);
+                    if (c) c->resume = e.here();
                 } else if (v <= 0xff00) {
                     e.addu(T1, r, rMEM);
                     e.lbu(dst, memOff(v), T1);
@@ -826,21 +854,27 @@ struct Translator {
                 e.subu(rCYC, rCYC, T5);
                 break;
             }
-            case M_INDX:
+            case M_INDX: {
                 indxAddr(v);
-                if (c_hasIo) ioCheck();
+                Stub* c = c_hasIo ? ioCheck(dst) : nullptr;
                 e.addu(T1, T2, rMEM);
                 e.lbu(dst, memOff(0), T1);
+                if (c) c->resume = e.here();
                 break;
-            case M_INDY:
+            }
+            case M_INDY: {
                 indyAddr(v, !c_hasIo);
+                Stub* c = nullptr;
                 if (c_hasIo) {
-                    ioCheck();
+                    c = ioCheck(dst);
+                    if (c) c->indy = true;
                     indyPenalty();
                 }
                 e.addu(T1, T2, rMEM);
                 e.lbu(dst, memOff(0), T1);
+                if (c) c->resume = e.here();
                 break;
+            }
         }
     }
 
@@ -1151,8 +1185,10 @@ struct Translator {
             case K_STY: {
                 uint32_t ea;
                 bool isConst = writeAddr(ea);
-                if (c_hasIo && !isConst) writeCheck();
-                storeAt(kind == K_STA ? rA : kind == K_STX ? rX : rY, isConst, ea);
+                const int val = kind == K_STA ? rA : kind == K_STX ? rX : rY;
+                Stub* c = (c_hasIo && !isConst) ? writeCheck(val) : nullptr;
+                storeAt(val, isConst, ea);
+                if (c) c->resume = e.here();
                 return true;
             }
             case K_AND:
@@ -1401,10 +1437,40 @@ struct Translator {
         return true;
     }
 
+    // Colour RAM ($D800-$DBFF with I/O mapped) is a byte array on the bus side:
+    // do the access here and continue the block. Anything else falls through to
+    // the slow exit, which the caller emits next.
+    void colorStub(Stub& s) {
+        e.andi(T0, T2, 0xfc00);
+        e.xori(T0, T0, 0xd800);
+        uint32_t notColor = e.bne(T0, ZERO);
+        const uint32_t mapped = (uint32_t)JBus::ioMappedFlag();
+        e.lui(AT, (mapped + 0x8000) >> 16);
+        e.lbu(T0, (int16_t)(mapped & 0xffff), AT);
+        uint32_t unmapped = e.beq(T0, ZERO);
+        if (s.indy) indyPenalty();
+        const uint32_t color = (uint32_t)JBus::colorRam();
+        e.andi(T0, T2, 0x3ff);
+        e.lui(AT, (color + 0x8000) >> 16);
+        e.addu(AT, AT, T0);
+        if (s.kind == ST_COLOR_R) {
+            e.lbu(s.reg, (int16_t)(color & 0xffff), AT);
+            e.ori(s.reg, s.reg, 0xf0);
+        } else {
+            e.andi(T1, s.reg, 0x0f);
+            e.sb(T1, (int16_t)(color & 0xffff), AT);
+        }
+        e.j(&e.code[s.resume]);
+        e.patch(notColor, e.here());
+        e.patch(unmapped, e.here());
+        s.kind = ST_SLOW;
+    }
+
     void emitStubs() {
         for (int i = 0; i < numStubs; i++) {
             Stub& s = stubs[i];
             e.patch(s.branchAt, e.here());
+            if (s.kind == ST_COLOR_R || s.kind == ST_COLOR_W) colorStub(s);
             materialize(e, s.nz);
             if (s.adj) e.addiu(rCYC, rCYC, s.adj);
             switch (s.kind) {
@@ -1774,6 +1840,14 @@ m6502::Stop m6502jit::run(State& st, uint32_t budget) {
                     return Stop::Trap;
                 case EXIT_SLOW: {
                     s_stats.exitsSlow++;
+#ifdef JIT_SLOWHIST
+                    {
+                        static uint16_t s_slowHist[65536];
+                        const uint32_t n = ++s_slowHist[st.pc];
+                        if (n >= 256 && (n & (n - 1)) == 0)
+                            ramsyscall_printf("SLOW pc=%04x op=%02x n=%u\n", st.pc, st.mem[st.pc], n);
+                    }
+#endif
                     const Stop w = stepOne(st);
                     if (w != Stop::Budget) return w;
                     if (s_stopReq) return Stop::Budget;
