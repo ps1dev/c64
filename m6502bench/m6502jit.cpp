@@ -138,6 +138,10 @@ enum ExitReason : uint32_t {
 };
 
 constexpr uint32_t c_threshold = 2;
+#ifndef M6502JIT_THRESHOLD_COVERED
+#define M6502JIT_THRESHOLD_COVERED 16
+#endif
+constexpr uint32_t c_thresholdCovered = M6502JIT_THRESHOLD_COVERED;
 constexpr int c_maxInsns = 40;
 constexpr uint32_t c_arenaWords = M6502JIT_ARENA_WORDS;
 constexpr uint32_t c_maxBlocks = 4096;
@@ -1621,9 +1625,17 @@ void* compile(State& st, uint32_t start, bool dec) {
         if (s_kind[op] == K_ILL) break;
         uint8_t len = s_len[op];
         if (pc + len > 0x10000) break;
-        if (smcTouched(pc, len)) break;
+        // Neither of these changes while the block start stays hot, so a start
+        // that fails on them is single-stepped instead of retried.
+        if (smcTouched(pc, len)) {
+            if (n == 0) s_failSlow = true;
+            break;
+        }
         // Code is never translated from the I/O page.
-        if (c_hasIo && (JBus::isIo(pc) || JBus::isIo(pc + len - 1))) break;
+        if (c_hasIo && (JBus::isIo(pc) || JBus::isIo(pc + len - 1))) {
+            if (n == 0) s_failSlow = true;
+            break;
+        }
         Insn& in = t.ins[n];
         in.pc = pc;
         in.op = op;
@@ -1805,7 +1817,11 @@ m6502::Stop m6502jit::run(State& st, uint32_t budget) {
         const uint32_t pc = st.pc;
         void* b = forceInterp ? nullptr : s_table[pc];
         if (!b && !forceInterp && s_hot[pc] != c_noTranslate) {
-            if (++s_hot[pc] >= c_threshold) {
+            // A start inside translated code is a resume point (after an
+            // interrupt or a budget exit). Compiling each one duplicates the
+            // block it lands in, so it has to be visited more often first.
+            const uint32_t covered = (s_codeBits[pc >> 3] >> (pc & 7)) & 1;
+            if (++s_hot[pc] >= (covered ? c_thresholdCovered : c_threshold)) {
                 s_hot[pc] = 0;
                 b = compile(st, pc, false);
                 if (!b && s_failSlow) s_hot[pc] = c_noTranslate;
