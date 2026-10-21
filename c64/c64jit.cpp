@@ -28,6 +28,6 @@ SOFTWARE.
 
 #define M6502JIT_BUS_HEADER "../c64/c64.hh"
 #define M6502JIT_BUS c64::Bus
-#define M6502JIT_ARENA_WORDS (64 * 1024)
+#define M6502JIT_ARENA_WORDS (128 * 1024)
 
 #include "../m6502bench/m6502jit.cpp"

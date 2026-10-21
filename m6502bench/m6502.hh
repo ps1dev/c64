@@ -112,6 +112,12 @@ struct FlatBus {
     static inline bool direct(uint32_t) { return true; }
     static inline bool isIo(uint32_t) { return false; }
     static inline bool smcVisible(uint32_t) { return true; }
+    // A colour RAM the recompiler may access directly at $D800-$DBFF while the
+    // byte at ioMappedFlag() is nonzero: stores keep the low nibble, reads
+    // return it with the high nibble set.
+    static constexpr bool hasColor = false;
+    static inline uint8_t* colorRam() { return nullptr; }
+    static inline const bool* ioMappedFlag() { return nullptr; }
 };
 
 // Pushes PC and P with B clear, sets I, and loads PC from the vector.

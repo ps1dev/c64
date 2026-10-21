@@ -138,6 +138,9 @@ struct Bus {
     static inline bool isIo(uint32_t a) { return (a >> 12) == 0xd; }
     // A write under ROM lands in g_ram, never in what the CPU executes.
     static inline bool smcVisible(uint32_t a) { return direct(a) || viewIsRam(a); }
+    static constexpr bool hasColor = true;
+    static inline uint8_t* colorRam() { return g_color; }
+    static inline const bool* ioMappedFlag() { return &g_ioMapped; }
 };
 
 // The VIC-II's view of memory: 16K bank selected by CIA2, character ROM at
